@@ -1,0 +1,4 @@
+post_id,datetime_et,kind,tickers,buy_ticker,buy_price,stop_price,text
+example-fl-1,2026-08-13 16:30:00,FL,"STX TER TOST NOW",,,,Example FL post. Replace with real X text.
+example-buy-1,2026-08-14 09:35:58,BUY,STX,STX,922.00,919.90,"Bought $STX 922 stop 919.90"
+example-buy-2,2026-08-14 09:36:32,BUY,TER,TER,401.55,399.55,"Bought $TER 401.55 stop 399.55"

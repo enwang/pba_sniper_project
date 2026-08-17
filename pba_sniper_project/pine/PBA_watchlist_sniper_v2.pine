@@ -1,0 +1,139 @@
+//@version=6
+indicator("PBA Tomorrow Levels", shorttitle="PBA Levels", overlay=true, max_lines_count=50, max_labels_count=50)
+
+// Purpose: while scanning your Focus/Strong watchlists, show where a PBA-style
+// low-risk buy could appear on the next trading day. No history signals, no table.
+
+debug_mode = input.bool(true, "Debug Mode")
+
+rs_symbol = "AMEX:SPY"
+rs_near_high_pct = 10.0
+min_weighted_rp = 0.0
+max_below_63d_high_pct = 15.0
+max_above_10ma_pct = 5.0
+max_above_20ma_pct = 9.0
+level_buffer_pct = 0.15
+
+d_close = request.security(syminfo.tickerid, "D", close, lookahead=barmerge.lookahead_on)
+d_prev_low = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+d_ema10 = request.security(syminfo.tickerid, "D", ta.ema(close, 10), lookahead=barmerge.lookahead_on)
+d_sma10 = request.security(syminfo.tickerid, "D", ta.sma(close, 10), lookahead=barmerge.lookahead_on)
+d_ema20 = request.security(syminfo.tickerid, "D", ta.ema(close, 20), lookahead=barmerge.lookahead_on)
+d_sma20 = request.security(syminfo.tickerid, "D", ta.sma(close, 20), lookahead=barmerge.lookahead_on)
+d_ema50 = request.security(syminfo.tickerid, "D", ta.ema(close, 50), lookahead=barmerge.lookahead_on)
+d_sma50 = request.security(syminfo.tickerid, "D", ta.sma(close, 50), lookahead=barmerge.lookahead_on)
+d_sma50_rising = request.security(syminfo.tickerid, "D", ta.sma(close, 50) > ta.sma(close, 50)[10], lookahead=barmerge.lookahead_on)
+d_63d_high = request.security(syminfo.tickerid, "D", ta.highest(high, 63), lookahead=barmerge.lookahead_on)
+d_roc63 = request.security(syminfo.tickerid, "D", ta.roc(close, 63), lookahead=barmerge.lookahead_on)
+d_roc126 = request.security(syminfo.tickerid, "D", ta.roc(close, 126), lookahead=barmerge.lookahead_on)
+d_roc189 = request.security(syminfo.tickerid, "D", ta.roc(close, 189), lookahead=barmerge.lookahead_on)
+d_roc252 = request.security(syminfo.tickerid, "D", ta.roc(close, 252), lookahead=barmerge.lookahead_on)
+
+b_close = request.security(rs_symbol, "D", close, lookahead=barmerge.lookahead_on)
+b_roc63 = request.security(rs_symbol, "D", ta.roc(close, 63), lookahead=barmerge.lookahead_on)
+b_roc126 = request.security(rs_symbol, "D", ta.roc(close, 126), lookahead=barmerge.lookahead_on)
+b_roc189 = request.security(rs_symbol, "D", ta.roc(close, 189), lookahead=barmerge.lookahead_on)
+b_roc252 = request.security(rs_symbol, "D", ta.roc(close, 252), lookahead=barmerge.lookahead_on)
+
+rs = d_close / b_close
+rs_high63 = ta.highest(rs, 63)
+rs_near_high = rs >= rs_high63 * (1.0 - rs_near_high_pct / 100.0)
+weighted_rp = 0.40 * (d_roc63 - b_roc63) + 0.20 * (d_roc126 - b_roc126) + 0.20 * (d_roc189 - b_roc189) + 0.20 * (d_roc252 - b_roc252)
+rs_ok = weighted_rp >= min_weighted_rp or rs_near_high
+
+near_63d_high = d_close >= d_63d_high * (1.0 - max_below_63d_high_pct / 100.0)
+ma20_high = math.max(d_ema20, d_sma20)
+ma50_high = math.max(d_ema50, d_sma50)
+above_20ma = d_close > ma20_high
+above_50ma = d_close > ma50_high
+pba_recent_ok = above_20ma and above_50ma and d_sma50_rising and near_63d_high
+trend_ok = pba_recent_ok and rs_ok
+watch_only_ok = rs_ok and above_20ma and not pba_recent_ok
+
+ma10_ref = math.max(d_ema10, d_sma10)
+ma20_ref = math.max(d_ema20, d_sma20)
+dist10 = (d_close / ma10_ref - 1.0) * 100.0
+dist20 = (d_close / ma20_ref - 1.0) * 100.0
+too_extended = trend_ok and (dist10 > max_above_10ma_pct or dist20 > max_above_20ma_pct)
+
+buffer = level_buffer_pct / 100.0
+f_risk(entry, stop) =>
+    stop > 0 and entry > stop ? (entry - stop) / entry * 100.0 : na
+
+entry_prev_low = d_prev_low
+stop_prev_low = d_prev_low * (1.0 - buffer)
+risk_prev_low = f_risk(entry_prev_low, stop_prev_low)
+
+entry_10ma_low = math.min(d_ema10, d_sma10)
+entry_10ma_high = math.max(d_ema10, d_sma10)
+stop_10ma = entry_10ma_low * (1.0 - buffer)
+risk_10ma = f_risk(entry_10ma_high, stop_10ma)
+
+entry_20ma_low = math.min(d_ema20, d_sma20)
+entry_20ma_high = math.max(d_ema20, d_sma20)
+stop_20ma = entry_20ma_low * (1.0 - buffer)
+risk_20ma = f_risk(entry_20ma_high, stop_20ma)
+
+entry_50ma_low = math.min(d_ema50, d_sma50)
+entry_50ma_high = math.max(d_ema50, d_sma50)
+stop_50ma = entry_50ma_low * (1.0 - buffer)
+risk_50ma = f_risk(entry_50ma_high, stop_50ma)
+
+setup_ok = trend_ok and not too_extended
+
+f_yesno(x) =>
+    x ? "OK" : "NO"
+
+f_level_line(name, entry, stop, risk) =>
+    name + " " + str.tostring(entry, format.mintick) + " / stop " + str.tostring(stop, format.mintick) + " / risk " + str.tostring(risk, "#.##") + "%"
+
+f_zone_line(name, low_price, high_price, stop, risk) =>
+    name + " " + str.tostring(low_price, format.mintick) + "-" + str.tostring(high_price, format.mintick) + " / stop " + str.tostring(stop, format.mintick) + " / risk " + str.tostring(risk, "#.##") + "%"
+
+rs_debug = rs_ok ? "RS OK: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high) : "RS FAIL: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high)
+trend_fail = (above_20ma ? "" : "below 20MA; ") + (above_50ma ? "" : "below 50MA; ") + (d_sma50_rising ? "" : "50MA not rising; ") + (near_63d_high ? "" : "not near 63D high; ")
+trend_debug = pba_recent_ok ? "Trend OK" : "Trend FAIL: " + trend_fail
+extended_debug = too_extended ? "Extended: wait for pullback" : "Extended OK: 10MA " + str.tostring(dist10, "#.##") + "%, 20MA " + str.tostring(dist20, "#.##") + "%"
+debug_text = "PBA DEBUG" +
+     "\n" + rs_debug +
+     "\n" + trend_debug +
+     "\n" + extended_debug
+
+watch_text = "PBA SETUP" +
+     "\n" + f_level_line("PD low reclaim", entry_prev_low, stop_prev_low, risk_prev_low) +
+     "\n" + f_zone_line("10MA retest", entry_10ma_low, entry_10ma_high, stop_10ma, risk_10ma) +
+     "\n" + f_zone_line("20MA retest", entry_20ma_low, entry_20ma_high, stop_20ma, risk_20ma) +
+     "\n" + f_zone_line("50MA reclaim", entry_50ma_low, entry_50ma_high, stop_50ma, risk_50ma)
+
+watch_only_text = "WATCH ONLY: no buy level yet" +
+     "\nWait for: " + (above_50ma ? "" : "50MA reclaim; ") + (d_sma50_rising ? "" : "50MA turn up; ") + (near_63d_high ? "" : "closer to 63D high; ") +
+     "\nDo not chase until intraday reclaim/retest appears."
+
+anchor_pdl_dist = math.abs(d_close / entry_prev_low - 1.0)
+anchor_10ma_dist = math.abs(d_close / entry_10ma_high - 1.0)
+anchor_20ma_dist = math.abs(d_close / entry_20ma_high - 1.0)
+anchor_50ma_dist = math.abs(d_close / entry_50ma_high - 1.0)
+float anchor_level = entry_prev_low
+float anchor_dist = anchor_pdl_dist
+if anchor_10ma_dist < anchor_dist
+    anchor_level := entry_10ma_high
+    anchor_dist := anchor_10ma_dist
+if anchor_20ma_dist < anchor_dist
+    anchor_level := entry_20ma_high
+    anchor_dist := anchor_20ma_dist
+if anchor_50ma_dist < anchor_dist
+    anchor_level := entry_50ma_high
+
+var label status_label = na
+if barstate.islast
+    label.delete(status_label)
+    fail_txt = not rs_ok ? "RS" : not pba_recent_ok ? "trend" : "filter"
+    no_level_text = (watch_only_ok ? watch_only_text : "NO EDGE: " + (not trend_ok ? fail_txt + " fail" : "too extended")) + "\n" + debug_text
+    label_text = setup_ok ? watch_text + (debug_mode ? "\n\n" + debug_text : "") : debug_mode ? no_level_text : ""
+    y = setup_ok ? anchor_level : close
+    status_col = setup_ok ? color.rgb(0, 95, 55) : watch_only_ok ? color.rgb(180, 105, 0) : too_extended ? color.rgb(150, 35, 35) : color.rgb(80, 80, 80)
+    if label_text != ""
+        status_label := label.new(bar_index + 1, y, label_text, style=label.style_label_left, textcolor=color.white, color=status_col)
+
+alertcondition(trend_ok and not too_extended, title="PBA Tomorrow Watch", message="{{ticker}} has PBA-style tomorrow watch levels. Look for 5m reclaim/retest with tight stop.")
+alertcondition(too_extended, title="PBA Too Extended", message="{{ticker}} is strong but extended. No fresh PBA-style buy yet.")
