@@ -14,6 +14,9 @@ MAX_ABOVE_10MA_PCT = 5.0
 MAX_ABOVE_20MA_PCT = 9.0
 LEVEL_BUFFER_PCT = 0.15
 BUY_MATCH_TOLERANCE_PCT = 1.25
+BUY_LOOSE_MATCH_TOLERANCE_PCT = 2.0
+RECLAIM_WATCH_DISTANCE_PCT = 3.0
+PD_LOW_WATCH_DISTANCE_PCT = 2.0
 
 
 @dataclass
@@ -129,15 +132,25 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
     rs_now = rs_vals[-1]
     rs_near_high = rs_now >= max(rs_vals) * (1.0 - RS_NEAR_HIGH_PCT / 100.0)
     rs_ok = weighted_rp >= MIN_WEIGHTED_RP or rs_near_high
+    rs_power_ok = weighted_rp >= 50.0
 
     high_63 = max(highs[idx - 62 : idx + 1])
     near_63d_high = closes[idx] >= high_63 * (1.0 - MAX_BELOW_63D_HIGH_PCT / 100.0)
     ma20_high = max(float(ema20), float(sma20_v))
     ma50_high = max(float(ema50), float(sma50_v))
+    ma20_low = min(float(ema20), float(sma20_v))
+    ma50_low = min(float(ema50), float(sma50_v))
     above_20ma = closes[idx] > ma20_high
     above_50ma = closes[idx] > ma50_high
+    near_20ma = pct_dist(closes[idx], ma20_high) <= RECLAIM_WATCH_DISTANCE_PCT or ma20_low <= closes[idx] <= ma20_high
+    near_50ma = pct_dist(closes[idx], ma50_high) <= RECLAIM_WATCH_DISTANCE_PCT or ma50_low <= closes[idx] <= ma50_high
+    near_pd_low = pct_dist(closes[idx], lows[idx]) <= PD_LOW_WATCH_DISTANCE_PCT
     sma50_rising = float(sma50_v) > float(sma50_old)
     pba_recent_ok = above_20ma and above_50ma and sma50_rising and near_63d_high
+    reclaim_watch_ok = rs_ok and (near_20ma or near_50ma)
+    ma50_reclaim_watch_ok = above_20ma and near_50ma
+    power_leader_watch_ok = rs_power_ok
+    level_setup_ok = near_pd_low or near_20ma or near_50ma
 
     ma10_ref = max(float(ema10), float(sma10_v))
     ma20_ref = max(float(ema20), float(sma20_v))
@@ -145,16 +158,16 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
     dist20 = (closes[idx] / ma20_ref - 1.0) * 100.0
     too_extended = pba_recent_ok and rs_ok and (dist10 > MAX_ABOVE_10MA_PCT or dist20 > MAX_ABOVE_20MA_PCT)
 
-    if pba_recent_ok and rs_ok and not too_extended:
+    if (pba_recent_ok and rs_ok and not too_extended) or level_setup_ok:
         state = "SETUP"
-    elif rs_ok and above_20ma:
+    elif (rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok:
         state = "WATCH_ONLY"
     else:
         state = "NO_EDGE"
 
     buffer = LEVEL_BUFFER_PCT / 100.0
     levels = {
-        "PD low reclaim": (lows[idx - 1], lows[idx - 1] * (1.0 - buffer)) if idx > 0 else (math.nan, math.nan),
+        "PD low reclaim": (lows[idx], lows[idx] * (1.0 - buffer)),
         "10MA retest": (min(float(ema10), float(sma10_v)), max(float(ema10), float(sma10_v))),
         "20MA retest": (min(float(ema20), float(sma20_v)), max(float(ema20), float(sma20_v))),
         "50MA reclaim": (min(float(ema50), float(sma50_v)), max(float(ema50), float(sma50_v))),
@@ -163,8 +176,12 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
         "state": state,
         "weighted_rp": weighted_rp,
         "rs_near_high": rs_near_high,
+        "rs_power_ok": rs_power_ok,
         "above_20ma": above_20ma,
         "above_50ma": above_50ma,
+        "near_20ma": near_20ma,
+        "near_50ma": near_50ma,
+        "near_pd_low": near_pd_low,
         "sma50_rising": sma50_rising,
         "near_63d_high": near_63d_high,
         "too_extended": too_extended,
@@ -230,6 +247,9 @@ def main() -> None:
     report = []
     fl_total = fl_watch_hits = 0
     buy_total = buy_matches = 0
+    buy_strict_total = buy_strict_matches = 0
+    buy_candidate_total = buy_candidate_hits = 0
+    buy_loose_matches = 0
 
     for post in posts:
         kind = post.get("kind", "").upper()
@@ -268,6 +288,12 @@ def main() -> None:
             buy_total += 1
             matched = dist <= BUY_MATCH_TOLERANCE_PCT
             buy_matches += matched
+            if st["state"] not in ("MISSING_PRICE", "INSUFFICIENT_HISTORY"):
+                buy_strict_total += 1
+                buy_strict_matches += matched
+                buy_loose_matches += dist <= BUY_LOOSE_MATCH_TOLERANCE_PCT
+                buy_candidate_total += 1
+                buy_candidate_hits += st["state"] in ("SETUP", "WATCH_ONLY")
             report.append(
                 {
                     "kind": "BUY",
@@ -279,6 +305,13 @@ def main() -> None:
                     "level_dist_pct": round(dist, 2),
                     "matched": matched,
                     "rp": round(st.get("weighted_rp", math.nan), 2),
+                    "rs_near_high": st.get("rs_near_high", ""),
+                    "above_20ma": st.get("above_20ma", ""),
+                    "above_50ma": st.get("above_50ma", ""),
+                    "near_20ma": st.get("near_20ma", ""),
+                    "near_50ma": st.get("near_50ma", ""),
+                    "near_63d_high": st.get("near_63d_high", ""),
+                    "too_extended": st.get("too_extended", ""),
                 }
             )
 
@@ -294,6 +327,10 @@ def main() -> None:
     buy_match_rate = buy_matches / buy_total if buy_total else math.nan
     print(f"FL recall: {fl_watch_hits}/{fl_total} = {fl_recall:.1%}" if fl_total else "FL recall: no FL cases")
     print(f"Buy match: {buy_matches}/{buy_total} = {buy_match_rate:.1%}" if buy_total else "Buy match: no BUY cases")
+    if buy_strict_total:
+        print(f"Buy candidate recall: {buy_candidate_hits}/{buy_candidate_total} = {buy_candidate_hits / buy_candidate_total:.1%}")
+        print(f"Buy level strict <= {BUY_MATCH_TOLERANCE_PCT}%: {buy_strict_matches}/{buy_strict_total} = {buy_strict_matches / buy_strict_total:.1%}")
+        print(f"Buy level loose <= {BUY_LOOSE_MATCH_TOLERANCE_PCT}%: {buy_loose_matches}/{buy_strict_total} = {buy_loose_matches / buy_strict_total:.1%}")
     print(f"Wrote {out_path}")
 
 

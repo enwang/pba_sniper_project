@@ -1,0 +1,5 @@
+data/
+eval/prices/
+eval/posts.csv
+eval/eval_report_*.csv
+eval/__pycache__/

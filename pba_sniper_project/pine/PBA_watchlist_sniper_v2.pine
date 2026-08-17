@@ -13,9 +13,11 @@ max_below_63d_high_pct = 15.0
 max_above_10ma_pct = 5.0
 max_above_20ma_pct = 9.0
 level_buffer_pct = 0.15
+reclaim_watch_distance_pct = 3.0
+pd_low_watch_distance_pct = 2.0
 
 d_close = request.security(syminfo.tickerid, "D", close, lookahead=barmerge.lookahead_on)
-d_prev_low = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+d_today_low = request.security(syminfo.tickerid, "D", low, lookahead=barmerge.lookahead_on)
 d_ema10 = request.security(syminfo.tickerid, "D", ta.ema(close, 10), lookahead=barmerge.lookahead_on)
 d_sma10 = request.security(syminfo.tickerid, "D", ta.sma(close, 10), lookahead=barmerge.lookahead_on)
 d_ema20 = request.security(syminfo.tickerid, "D", ta.ema(close, 20), lookahead=barmerge.lookahead_on)
@@ -40,15 +42,25 @@ rs_high63 = ta.highest(rs, 63)
 rs_near_high = rs >= rs_high63 * (1.0 - rs_near_high_pct / 100.0)
 weighted_rp = 0.40 * (d_roc63 - b_roc63) + 0.20 * (d_roc126 - b_roc126) + 0.20 * (d_roc189 - b_roc189) + 0.20 * (d_roc252 - b_roc252)
 rs_ok = weighted_rp >= min_weighted_rp or rs_near_high
+rs_power_ok = weighted_rp >= 50.0
 
 near_63d_high = d_close >= d_63d_high * (1.0 - max_below_63d_high_pct / 100.0)
 ma20_high = math.max(d_ema20, d_sma20)
 ma50_high = math.max(d_ema50, d_sma50)
+ma20_low = math.min(d_ema20, d_sma20)
+ma50_low = math.min(d_ema50, d_sma50)
 above_20ma = d_close > ma20_high
 above_50ma = d_close > ma50_high
+near_20ma = math.abs(d_close / ma20_high - 1.0) * 100.0 <= reclaim_watch_distance_pct or (d_close >= ma20_low and d_close <= ma20_high)
+near_50ma = math.abs(d_close / ma50_high - 1.0) * 100.0 <= reclaim_watch_distance_pct or (d_close >= ma50_low and d_close <= ma50_high)
+near_pd_low = math.abs(d_close / d_today_low - 1.0) * 100.0 <= pd_low_watch_distance_pct
 pba_recent_ok = above_20ma and above_50ma and d_sma50_rising and near_63d_high
-trend_ok = pba_recent_ok and rs_ok
-watch_only_ok = rs_ok and above_20ma and not pba_recent_ok
+level_setup_ok = near_pd_low or near_20ma or near_50ma
+trend_ok = (pba_recent_ok and rs_ok) or level_setup_ok
+reclaim_watch_ok = rs_ok and (near_20ma or near_50ma)
+ma50_reclaim_watch_ok = above_20ma and near_50ma
+power_leader_watch_ok = rs_power_ok
+watch_only_ok = ((rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok) and not trend_ok
 
 ma10_ref = math.max(d_ema10, d_sma10)
 ma20_ref = math.max(d_ema20, d_sma20)
@@ -60,8 +72,8 @@ buffer = level_buffer_pct / 100.0
 f_risk(entry, stop) =>
     stop > 0 and entry > stop ? (entry - stop) / entry * 100.0 : na
 
-entry_prev_low = d_prev_low
-stop_prev_low = d_prev_low * (1.0 - buffer)
+entry_prev_low = d_today_low
+stop_prev_low = d_today_low * (1.0 - buffer)
 risk_prev_low = f_risk(entry_prev_low, stop_prev_low)
 
 entry_10ma_low = math.min(d_ema10, d_sma10)
@@ -92,11 +104,13 @@ f_zone_line(name, low_price, high_price, stop, risk) =>
 
 rs_debug = rs_ok ? "RS OK: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high) : "RS FAIL: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high)
 trend_fail = (above_20ma ? "" : "below 20MA; ") + (above_50ma ? "" : "below 50MA; ") + (d_sma50_rising ? "" : "50MA not rising; ") + (near_63d_high ? "" : "not near 63D high; ")
-trend_debug = pba_recent_ok ? "Trend OK" : "Trend FAIL: " + trend_fail
+trend_debug = pba_recent_ok ? "Trend OK" : level_setup_ok ? "Level setup OK" : "Trend FAIL: " + trend_fail
+reclaim_debug = reclaim_watch_ok or ma50_reclaim_watch_ok ? "Reclaim watch OK: near 20/50MA" : power_leader_watch_ok ? "Power leader watch OK" : "Reclaim watch NO"
 extended_debug = too_extended ? "Extended: wait for pullback" : "Extended OK: 10MA " + str.tostring(dist10, "#.##") + "%, 20MA " + str.tostring(dist20, "#.##") + "%"
 debug_text = "PBA DEBUG" +
      "\n" + rs_debug +
      "\n" + trend_debug +
+     "\n" + reclaim_debug +
      "\n" + extended_debug
 
 watch_text = "PBA SETUP" +
