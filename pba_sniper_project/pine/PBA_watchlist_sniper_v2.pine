@@ -15,9 +15,17 @@ max_above_20ma_pct = 9.0
 level_buffer_pct = 0.15
 reclaim_watch_distance_pct = 3.0
 pd_low_watch_distance_pct = 2.0
+gap_hold_min_pct = 1.5
+min_recent_leader_rp = 2.0
 
 d_close = request.security(syminfo.tickerid, "D", close, lookahead=barmerge.lookahead_on)
 d_today_low = request.security(syminfo.tickerid, "D", low, lookahead=barmerge.lookahead_on)
+d_open = request.security(syminfo.tickerid, "D", open, lookahead=barmerge.lookahead_on)
+d_high = request.security(syminfo.tickerid, "D", high, lookahead=barmerge.lookahead_on)
+d_prev_high = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
+d_high_2 = request.security(syminfo.tickerid, "D", high[2], lookahead=barmerge.lookahead_on)
+d_prev_close = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+d_prev_swing_low = request.security(syminfo.tickerid, "D", ta.lowest(low, 5)[5], lookahead=barmerge.lookahead_on)
 d_ema10 = request.security(syminfo.tickerid, "D", ta.ema(close, 10), lookahead=barmerge.lookahead_on)
 d_sma10 = request.security(syminfo.tickerid, "D", ta.sma(close, 10), lookahead=barmerge.lookahead_on)
 d_ema20 = request.security(syminfo.tickerid, "D", ta.ema(close, 20), lookahead=barmerge.lookahead_on)
@@ -27,11 +35,17 @@ d_sma50 = request.security(syminfo.tickerid, "D", ta.sma(close, 50), lookahead=b
 d_sma50_rising = request.security(syminfo.tickerid, "D", ta.sma(close, 50) > ta.sma(close, 50)[10], lookahead=barmerge.lookahead_on)
 d_63d_high = request.security(syminfo.tickerid, "D", ta.highest(high, 63), lookahead=barmerge.lookahead_on)
 d_roc63 = request.security(syminfo.tickerid, "D", ta.roc(close, 63), lookahead=barmerge.lookahead_on)
+d_roc5 = request.security(syminfo.tickerid, "D", ta.roc(close, 5), lookahead=barmerge.lookahead_on)
+d_roc10 = request.security(syminfo.tickerid, "D", ta.roc(close, 10), lookahead=barmerge.lookahead_on)
+d_roc20 = request.security(syminfo.tickerid, "D", ta.roc(close, 20), lookahead=barmerge.lookahead_on)
 d_roc126 = request.security(syminfo.tickerid, "D", ta.roc(close, 126), lookahead=barmerge.lookahead_on)
 d_roc189 = request.security(syminfo.tickerid, "D", ta.roc(close, 189), lookahead=barmerge.lookahead_on)
 d_roc252 = request.security(syminfo.tickerid, "D", ta.roc(close, 252), lookahead=barmerge.lookahead_on)
 
 b_close = request.security(rs_symbol, "D", close, lookahead=barmerge.lookahead_on)
+b_roc5 = request.security(rs_symbol, "D", ta.roc(close, 5), lookahead=barmerge.lookahead_on)
+b_roc10 = request.security(rs_symbol, "D", ta.roc(close, 10), lookahead=barmerge.lookahead_on)
+b_roc20 = request.security(rs_symbol, "D", ta.roc(close, 20), lookahead=barmerge.lookahead_on)
 b_roc63 = request.security(rs_symbol, "D", ta.roc(close, 63), lookahead=barmerge.lookahead_on)
 b_roc126 = request.security(rs_symbol, "D", ta.roc(close, 126), lookahead=barmerge.lookahead_on)
 b_roc189 = request.security(rs_symbol, "D", ta.roc(close, 189), lookahead=barmerge.lookahead_on)
@@ -41,26 +55,41 @@ rs = d_close / b_close
 rs_high63 = ta.highest(rs, 63)
 rs_near_high = rs >= rs_high63 * (1.0 - rs_near_high_pct / 100.0)
 weighted_rp = 0.40 * (d_roc63 - b_roc63) + 0.20 * (d_roc126 - b_roc126) + 0.20 * (d_roc189 - b_roc189) + 0.20 * (d_roc252 - b_roc252)
+recent_rp = 0.50 * (d_roc5 - b_roc5) + 0.30 * (d_roc10 - b_roc10) + 0.20 * (d_roc20 - b_roc20)
 rs_ok = weighted_rp >= min_weighted_rp or rs_near_high
 rs_power_ok = weighted_rp >= 50.0
 
 near_63d_high = d_close >= d_63d_high * (1.0 - max_below_63d_high_pct / 100.0)
 ma20_high = math.max(d_ema20, d_sma20)
 ma50_high = math.max(d_ema50, d_sma50)
+ma10_high = math.max(d_ema10, d_sma10)
 ma20_low = math.min(d_ema20, d_sma20)
 ma50_low = math.min(d_ema50, d_sma50)
+ma10_low = math.min(d_ema10, d_sma10)
 above_20ma = d_close > ma20_high
 above_50ma = d_close > ma50_high
+near_10ma = math.abs(d_close / ma10_high - 1.0) * 100.0 <= reclaim_watch_distance_pct or (d_close >= ma10_low and d_close <= ma10_high)
 near_20ma = math.abs(d_close / ma20_high - 1.0) * 100.0 <= reclaim_watch_distance_pct or (d_close >= ma20_low and d_close <= ma20_high)
 near_50ma = math.abs(d_close / ma50_high - 1.0) * 100.0 <= reclaim_watch_distance_pct or (d_close >= ma50_low and d_close <= ma50_high)
 near_pd_low = math.abs(d_close / d_today_low - 1.0) * 100.0 <= pd_low_watch_distance_pct
-pba_recent_ok = above_20ma and above_50ma and d_sma50_rising and near_63d_high
-level_setup_ok = near_pd_low or near_20ma or near_50ma
-trend_ok = (pba_recent_ok and rs_ok) or level_setup_ok
+hh1 = d_high > d_prev_high
+hh2 = d_high > d_prev_high and d_prev_high > d_high_2
+hl_swing = d_today_low > d_prev_swing_low
+gap_up = d_open > d_prev_close * (1.0 + gap_hold_min_pct / 100.0)
+gap_not_filled = gap_up and d_today_low > d_prev_high
+recent_rs_ok = recent_rp > 0
+recent_leader_ok = recent_rp >= min_recent_leader_rp
+structure_ok = (hh1 and hl_swing) or hh2 or gap_not_filled
+ma_support_ok = above_20ma or near_20ma or above_50ma or near_50ma
+pba_recent_ok = structure_ok and ma_support_ok and recent_leader_ok
 reclaim_watch_ok = rs_ok and (near_20ma or near_50ma)
 ma50_reclaim_watch_ok = above_20ma and near_50ma
 power_leader_watch_ok = rs_power_ok
-watch_only_ok = ((rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok) and not trend_ok
+trend_quality_ok = rs_ok and ma_support_ok and (gap_not_filled or (structure_ok and recent_leader_ok) or rs_power_ok)
+actionable_level_ok = near_pd_low or near_10ma or near_20ma or near_50ma
+level_setup_ok = actionable_level_ok and trend_quality_ok
+trend_ok = level_setup_ok
+watch_only_ok = (trend_quality_ok or (rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok) and not trend_ok
 
 ma10_ref = math.max(d_ema10, d_sma10)
 ma20_ref = math.max(d_ema20, d_sma20)
@@ -102,9 +131,9 @@ f_level_line(name, entry, stop, risk) =>
 f_zone_line(name, low_price, high_price, stop, risk) =>
     name + " " + str.tostring(low_price, format.mintick) + "-" + str.tostring(high_price, format.mintick) + " / stop " + str.tostring(stop, format.mintick) + " / risk " + str.tostring(risk, "#.##") + "%"
 
-rs_debug = rs_ok ? "RS OK: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high) : "RS FAIL: RP " + str.tostring(weighted_rp, "#.##") + ", RS near 63D high " + f_yesno(rs_near_high)
-trend_fail = (above_20ma ? "" : "below 20MA; ") + (above_50ma ? "" : "below 50MA; ") + (d_sma50_rising ? "" : "50MA not rising; ") + (near_63d_high ? "" : "not near 63D high; ")
-trend_debug = pba_recent_ok ? "Trend OK" : level_setup_ok ? "Level setup OK" : "Trend FAIL: " + trend_fail
+rs_debug = rs_ok ? "RS OK: RP " + str.tostring(weighted_rp, "#.##") + ", recent RP " + str.tostring(recent_rp, "#.##") : "RS FAIL: RP " + str.tostring(weighted_rp, "#.##") + ", recent RP " + str.tostring(recent_rp, "#.##")
+trend_fail = (structure_ok ? "" : "no HH/HL or gap hold; ") + (ma_support_ok ? "" : "no MA support; ") + (recent_leader_ok ? "" : "recent leader weak; ") + (actionable_level_ok ? "" : "no nearby level; ")
+trend_debug = trend_quality_ok ? "Trend OK: leader quality" : "Trend FAIL: " + trend_fail
 reclaim_debug = reclaim_watch_ok or ma50_reclaim_watch_ok ? "Reclaim watch OK: near 20/50MA" : power_leader_watch_ok ? "Power leader watch OK" : "Reclaim watch NO"
 extended_debug = too_extended ? "Extended: wait for pullback" : "Extended OK: 10MA " + str.tostring(dist10, "#.##") + "%, 20MA " + str.tostring(dist20, "#.##") + "%"
 debug_text = "PBA DEBUG" +
@@ -120,7 +149,7 @@ watch_text = "PBA SETUP" +
      "\n" + f_zone_line("50MA reclaim", entry_50ma_low, entry_50ma_high, stop_50ma, risk_50ma)
 
 watch_only_text = "WATCH ONLY: no buy level yet" +
-     "\nWait for: " + (above_50ma ? "" : "50MA reclaim; ") + (d_sma50_rising ? "" : "50MA turn up; ") + (near_63d_high ? "" : "closer to 63D high; ") +
+     "\nWait for: " + (structure_ok ? "" : "HH/HL or gap hold; ") + (ma_support_ok ? "" : "MA support/reclaim; ") + (recent_leader_ok ? "" : "recent leader improve; ") + (actionable_level_ok ? "" : "near PD low/MA; ") +
      "\nDo not chase until intraday reclaim/retest appears."
 
 anchor_pdl_dist = math.abs(d_close / entry_prev_low - 1.0)
@@ -141,7 +170,7 @@ if anchor_50ma_dist < anchor_dist
 var label status_label = na
 if barstate.islast
     label.delete(status_label)
-    fail_txt = not rs_ok ? "RS" : not pba_recent_ok ? "trend" : "filter"
+    fail_txt = not rs_ok ? "RS" : not trend_quality_ok ? "trend" : not actionable_level_ok ? "level" : "filter"
     no_level_text = (watch_only_ok ? watch_only_text : "NO EDGE: " + (not trend_ok ? fail_txt + " fail" : "too extended")) + "\n" + debug_text
     label_text = setup_ok ? watch_text + (debug_mode ? "\n\n" + debug_text : "") : debug_mode ? no_level_text : ""
     y = setup_ok ? anchor_level : close

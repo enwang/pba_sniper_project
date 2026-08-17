@@ -17,6 +17,8 @@ BUY_MATCH_TOLERANCE_PCT = 1.25
 BUY_LOOSE_MATCH_TOLERANCE_PCT = 2.0
 RECLAIM_WATCH_DISTANCE_PCT = 3.0
 PD_LOW_WATCH_DISTANCE_PCT = 2.0
+GAP_HOLD_MIN_PCT = 1.5
+MIN_RECENT_LEADER_RP = 2.0
 
 
 @dataclass
@@ -121,6 +123,14 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
             return {"state": "INSUFFICIENT_HISTORY"}
         rocs.append(weight * (stock_roc - spy_roc))
     weighted_rp = sum(rocs)
+    recent_parts = []
+    for length, weight in ((5, 0.50), (10, 0.30), (20, 0.20)):
+        stock_roc = roc(closes, idx, length)
+        spy_roc = roc(spy_closes, spy_idx, length)
+        if stock_roc is None or spy_roc is None:
+            return {"state": "INSUFFICIENT_HISTORY"}
+        recent_parts.append(weight * (stock_roc - spy_roc))
+    recent_rp = sum(recent_parts)
 
     rs_vals = []
     for offset in range(62, -1, -1):
@@ -140,17 +150,32 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
     ma50_high = max(float(ema50), float(sma50_v))
     ma20_low = min(float(ema20), float(sma20_v))
     ma50_low = min(float(ema50), float(sma50_v))
+    ma10_high = max(float(ema10), float(sma10_v))
+    ma10_low = min(float(ema10), float(sma10_v))
     above_20ma = closes[idx] > ma20_high
     above_50ma = closes[idx] > ma50_high
+    near_10ma = pct_dist(closes[idx], ma10_high) <= RECLAIM_WATCH_DISTANCE_PCT or ma10_low <= closes[idx] <= ma10_high
     near_20ma = pct_dist(closes[idx], ma20_high) <= RECLAIM_WATCH_DISTANCE_PCT or ma20_low <= closes[idx] <= ma20_high
     near_50ma = pct_dist(closes[idx], ma50_high) <= RECLAIM_WATCH_DISTANCE_PCT or ma50_low <= closes[idx] <= ma50_high
     near_pd_low = pct_dist(closes[idx], lows[idx]) <= PD_LOW_WATCH_DISTANCE_PCT
     sma50_rising = float(sma50_v) > float(sma50_old)
-    pba_recent_ok = above_20ma and above_50ma and sma50_rising and near_63d_high
+    hh1 = highs[idx] > highs[idx - 1] if idx >= 1 else False
+    hh2 = highs[idx] > highs[idx - 1] > highs[idx - 2] if idx >= 2 else False
+    prev_swing_low = min(lows[idx - 10 : idx - 5]) if idx >= 10 else math.inf
+    hl_swing = lows[idx] > prev_swing_low
+    gap_up = ticker_rows[idx].open > closes[idx - 1] * (1.0 + GAP_HOLD_MIN_PCT / 100.0) if idx >= 1 else False
+    gap_not_filled = gap_up and lows[idx] > highs[idx - 1]
+    recent_rs_ok = recent_rp > 0
+    recent_leader_ok = recent_rp >= MIN_RECENT_LEADER_RP
+    structure_ok = (hh1 and hl_swing) or hh2 or gap_not_filled
+    ma_support_ok = above_20ma or near_20ma or above_50ma or near_50ma
+    pba_recent_ok = structure_ok and ma_support_ok and recent_leader_ok
     reclaim_watch_ok = rs_ok and (near_20ma or near_50ma)
     ma50_reclaim_watch_ok = above_20ma and near_50ma
     power_leader_watch_ok = rs_power_ok
-    level_setup_ok = near_pd_low or near_20ma or near_50ma
+    trend_quality_ok = rs_ok and ma_support_ok and (gap_not_filled or (structure_ok and recent_leader_ok) or rs_power_ok)
+    actionable_level_ok = near_pd_low or near_10ma or near_20ma or near_50ma
+    level_setup_ok = actionable_level_ok and trend_quality_ok
 
     ma10_ref = max(float(ema10), float(sma10_v))
     ma20_ref = max(float(ema20), float(sma20_v))
@@ -158,9 +183,9 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
     dist20 = (closes[idx] / ma20_ref - 1.0) * 100.0
     too_extended = pba_recent_ok and rs_ok and (dist10 > MAX_ABOVE_10MA_PCT or dist20 > MAX_ABOVE_20MA_PCT)
 
-    if (pba_recent_ok and rs_ok and not too_extended) or level_setup_ok:
+    if level_setup_ok and not too_extended:
         state = "SETUP"
-    elif (rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok:
+    elif trend_quality_ok or (rs_ok and above_20ma) or reclaim_watch_ok or ma50_reclaim_watch_ok or power_leader_watch_ok:
         state = "WATCH_ONLY"
     else:
         state = "NO_EDGE"
@@ -175,15 +200,24 @@ def state_for(ticker_rows: list[Bar], spy_rows: list[Bar], idx: int) -> dict:
     return {
         "state": state,
         "weighted_rp": weighted_rp,
+        "recent_rp": recent_rp,
         "rs_near_high": rs_near_high,
         "rs_power_ok": rs_power_ok,
         "above_20ma": above_20ma,
         "above_50ma": above_50ma,
+        "near_10ma": near_10ma,
         "near_20ma": near_20ma,
         "near_50ma": near_50ma,
         "near_pd_low": near_pd_low,
         "sma50_rising": sma50_rising,
         "near_63d_high": near_63d_high,
+        "structure_ok": structure_ok,
+        "gap_not_filled": gap_not_filled,
+        "recent_rs_ok": recent_rs_ok,
+        "recent_leader_ok": recent_leader_ok,
+        "ma_support_ok": ma_support_ok,
+        "trend_quality_ok": trend_quality_ok,
+        "actionable_level_ok": actionable_level_ok,
         "too_extended": too_extended,
         "dist10": dist10,
         "dist20": dist20,
